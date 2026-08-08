@@ -61,7 +61,7 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
 
       const zip = new JSZip();
       photosToDownload.forEach((photo, index) => {
-        zip.file(`snapmoment-${safeName}-${index + 1}-${photo.timestamp}.jpg`, photo.blob);
+        zip.file(`snapmoment-${safeName}-${index + 1}-${photo.taken_at}.jpg`, photo.blob);
       });
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);
