@@ -5,13 +5,15 @@ import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { defaultPreset, presets, Preset } from "@/lib/presets";
 import { savePhotoLocally, getAllPhotos, PhotoRecord } from "@/lib/idb";
-import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle, Download, CheckSquare } from "lucide-react";
+import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle, Download, CheckSquare, Loader2, CloudOff, Cloud } from "lucide-react";
 
 interface DisposableCameraProps {
   eventId: string;
+  isOnline?: boolean;
+  pendingCount?: number;
 }
 
-export function DisposableCamera({ eventId }: DisposableCameraProps) {
+export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }: DisposableCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -362,12 +364,29 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
 
       {/* Top Bar */}
       <div className="relative z-10 w-full flex justify-between items-center p-4 sm:p-6 pt-12 sm:pt-16 text-neutral-400 font-bold text-xs uppercase tracking-widest">
-         <div className="flex items-center gap-1 bg-neutral-800/80 px-3 py-1.5 rounded-full shadow-inner border border-neutral-700">
-           <span>&lt; CAMERAS</span>
+         {/* Online/Offline Status */}
+         <div className="flex items-center gap-2 bg-neutral-800/80 px-3 py-1.5 rounded-full shadow-inner border border-neutral-700">
+           <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500 shadow-[0_0_5px_#22c55e]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`}></div>
+           <span className="text-white/70 tracking-widest">
+             {isOnline ? 'ONLINE' : 'OFFLINE'}
+           </span>
          </div>
+         
+         {/* Upload Status Badge */}
          <div className="flex items-center">
-           <span>7 HR</span>
-           <span className="inline-block w-2 h-2 rounded-full bg-green-500 ml-2 shadow-[0_0_5px_#22c55e]" />
+            {pendingCount > 0 ? (
+              <div className="bg-black/80 backdrop-blur border border-white/10 rounded-full px-3 py-1.5 flex items-center space-x-2 shadow-lg">
+                {isOnline ? <Loader2 size={12} className="animate-spin text-white" /> : <CloudOff size={12} className="text-red-400" />}
+                <span className="text-xs font-medium text-white normal-case tracking-normal">
+                  {pendingCount} tertunda
+                </span>
+              </div>
+            ) : (
+              <div className="bg-black/40 backdrop-blur border border-white/10 rounded-full px-3 py-1.5 flex items-center space-x-2">
+                <Cloud size={12} className="text-green-400" />
+                <span className="text-xs font-medium text-white/50 normal-case tracking-normal">Semua tersimpan</span>
+              </div>
+            )}
          </div>
       </div>
 
