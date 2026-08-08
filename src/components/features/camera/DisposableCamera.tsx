@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { defaultPreset, presets, Preset } from "@/lib/presets";
 import { savePhotoLocally, getAllPhotos, PhotoRecord } from "@/lib/idb";
-import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle, Download, CheckSquare, Loader2, CloudOff, Cloud } from "lucide-react";
+import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle, Download, CheckSquare, Loader2, CloudOff, Cloud, Square } from "lucide-react";
 
 interface DisposableCameraProps {
   eventId: string;
@@ -29,6 +29,9 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
   const [selectedPhotoUrl, setSelectedPhotoUrl] = useState<string | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedForDownload, setSelectedForDownload] = useState<Set<string>>(new Set());
+  const [useFrame, setUseFrame] = useState(false);
+
+  const isBW = activePreset.id === 'ilford-hp5';
 
   const downloadSinglePhoto = (url: string) => {
     const guestName = localStorage.getItem("snapmoment_guest_name") || "tamu";
@@ -170,25 +173,37 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
     setFacingMode((prev) => (prev === "environment" ? "user" : "environment"));
   };
 
-  // Reactively apply torch (physical flash) if supported when stream or flashEnabled changes
-  useEffect(() => {
-    const track = stream?.getVideoTracks()[0];
-    if (track) {
-      try {
-        const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
-        if (capabilities?.torch) {
-          track.applyConstraints({ advanced: [{ torch: flashEnabled } as any] }).catch(console.warn);
-        }
-      } catch (err) {
-        console.warn("Torch not supported", err);
-      }
-    }
-  }, [stream, flashEnabled]);
+
 
   const capturePhoto = async () => {
     if (!videoRef.current || !canvasRef.current || isCapturing) return;
 
     setIsCapturing(true);
+    let torchTrack: MediaStreamTrack | null = null;
+
+    if (flashEnabled) {
+      if (facingMode === "user") {
+        setFlash(true);
+        // Wait 400ms for screen brightness to illuminate face and camera exposure to adjust
+        await new Promise((r) => setTimeout(r, 400));
+      } else {
+        if (stream) {
+          torchTrack = stream.getVideoTracks()[0];
+          if (torchTrack) {
+            try {
+              const capabilities = (torchTrack.getCapabilities && torchTrack.getCapabilities()) as any;
+              if (capabilities?.torch) {
+                await torchTrack.applyConstraints({ advanced: [{ torch: true } as any] });
+                await new Promise((r) => setTimeout(r, 250));
+              }
+            } catch (e) {
+              console.warn("Torch capture not supported", e);
+            }
+          }
+        }
+        setFlash(true);
+      }
+    }
 
     // Haptic & Sound (Shutter)
     if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(40);
@@ -211,58 +226,83 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
 
     // Calculate new dimensions (max 2000px longest side)
     const maxDim = 2000;
-    let targetWidth = video.videoWidth;
-    let targetHeight = video.videoHeight;
+    let videoWidth = video.videoWidth;
+    let videoHeight = video.videoHeight;
     
-    if (targetWidth > maxDim || targetHeight > maxDim) {
-      if (targetWidth > targetHeight) {
-        targetHeight = Math.floor(targetHeight * (maxDim / targetWidth));
-        targetWidth = maxDim;
+    if (videoWidth > maxDim || videoHeight > maxDim) {
+      if (videoWidth > videoHeight) {
+        videoHeight = Math.floor(videoHeight * (maxDim / videoWidth));
+        videoWidth = maxDim;
       } else {
-        targetWidth = Math.floor(targetWidth * (maxDim / targetHeight));
-        targetHeight = maxDim;
+        videoWidth = Math.floor(videoWidth * (maxDim / videoHeight));
+        videoHeight = maxDim;
       }
     }
 
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
+    let canvasWidth = videoWidth;
+    let canvasHeight = videoHeight;
+    let imgX = 0;
+    let imgY = 0;
+    let frameBottom = 0;
 
-    // Apply the preset filter to the context before drawing
+    if (useFrame) {
+      const padding = Math.floor(videoWidth * 0.05);
+      frameBottom = Math.floor(videoWidth * 0.25);
+      canvasWidth = videoWidth + padding * 2;
+      canvasHeight = videoHeight + padding + frameBottom;
+      imgX = padding;
+      imgY = padding;
+    }
+
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+
+    // 1. Draw Frame Background
+    if (useFrame) {
+      ctx.fillStyle = "#F8F8F8";
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    }
+
+    // 2. Draw Video
     ctx.filter = activePreset.cssFilter;
+    ctx.save();
     if (facingMode === "user") {
-      ctx.translate(targetWidth, 0);
+      ctx.translate(canvasWidth, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+    ctx.drawImage(video, imgX, imgY, videoWidth, videoHeight);
+    ctx.restore();
     
-    // Reset filter and transform
     ctx.filter = "none";
-    if (facingMode === "user") {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-    }
+    
+    // Save state for overlays restricted to the photo area
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(imgX, imgY, videoWidth, videoHeight);
+    ctx.clip();
     
     // 1. Light Leak (Randomized)
     if (activePreset.hasLightLeak && Math.random() > 0.6) {
-      const leakGradient = ctx.createLinearGradient(0, 0, targetWidth * 0.4, targetHeight * 0.5);
+      const leakGradient = ctx.createLinearGradient(imgX, imgY, imgX + videoWidth * 0.4, imgY + videoHeight * 0.5);
       leakGradient.addColorStop(0, "rgba(255, 60, 0, 0.4)"); // bright orange/red
       leakGradient.addColorStop(1, "rgba(255, 0, 0, 0)");
       ctx.fillStyle = leakGradient;
       ctx.globalCompositeOperation = "screen";
-      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      ctx.fillRect(imgX, imgY, videoWidth, videoHeight);
       ctx.globalCompositeOperation = "source-over";
     }
 
     // 2. Vignette
     if (activePreset.hasVignette) {
       const gradient = ctx.createRadialGradient(
-        targetWidth / 2, targetHeight / 2, Math.min(targetWidth, targetHeight) * 0.4,
-        targetWidth / 2, targetHeight / 2, Math.max(targetWidth, targetHeight) * 0.75
+        imgX + videoWidth / 2, imgY + videoHeight / 2, Math.min(videoWidth, videoHeight) * 0.4,
+        imgX + videoWidth / 2, imgY + videoHeight / 2, Math.max(videoWidth, videoHeight) * 0.75
       );
       gradient.addColorStop(0, "rgba(0,0,0,0)");
       gradient.addColorStop(1, "rgba(0,0,0,0.7)");
       ctx.fillStyle = gradient;
       ctx.globalCompositeOperation = "multiply";
-      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      ctx.fillRect(imgX, imgY, videoWidth, videoHeight);
       ctx.globalCompositeOperation = "source-over";
     }
     
@@ -293,7 +333,7 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
           ctx.globalAlpha = activePreset.grainIntensity;
           ctx.fillStyle = pattern;
           ctx.globalCompositeOperation = "overlay";
-          ctx.fillRect(0, 0, targetWidth, targetHeight);
+          ctx.fillRect(imgX, imgY, videoWidth, videoHeight);
           
           // Reset context states
           ctx.globalCompositeOperation = "source-over";
@@ -302,6 +342,8 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
       }
     }
     
+    ctx.restore(); // Remove clipping mask
+
     // 4. Date-Cam Timestamp
     const now = new Date();
     const yy = String(now.getFullYear()).slice(-2);
@@ -309,22 +351,44 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
     const dd = String(now.getDate()).padStart(2, '0');
     const timeStr = `'${yy} ${mm} ${dd}`;
 
-    ctx.font = `bold ${Math.floor(targetWidth * 0.035)}px monospace`;
-    ctx.fillStyle = "#FF5500"; // Bright orange
-    ctx.shadowColor = "rgba(255,0,0,0.8)";
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetX = 2;
-    ctx.shadowOffsetY = 2;
-    ctx.textAlign = "right";
-    ctx.globalCompositeOperation = "screen";
-    ctx.fillText(timeStr, targetWidth - (targetWidth * 0.05), targetHeight - (targetHeight * 0.05));
-    ctx.fillText(timeStr, targetWidth - (targetWidth * 0.05), targetHeight - (targetHeight * 0.05)); // Double draw for punchiness
+    let textX, textY;
+    if (useFrame) {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#222"; 
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.font = `bold ${Math.floor(videoWidth * 0.045)}px sans-serif`;
+      textX = canvasWidth / 2;
+      textY = imgY + videoHeight + (frameBottom * 0.55);
+    } else {
+      ctx.font = `bold ${Math.floor(videoWidth * 0.035)}px monospace`;
+      ctx.fillStyle = "#FF5500"; 
+      ctx.shadowColor = "rgba(255,0,0,0.8)";
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetX = 2;
+      ctx.shadowOffsetY = 2;
+      ctx.textAlign = "right";
+      textX = imgX + videoWidth - (videoWidth * 0.05);
+      textY = imgY + videoHeight - (videoHeight * 0.05);
+    }
+
+    ctx.globalCompositeOperation = useFrame ? "source-over" : "screen";
+    ctx.fillText(timeStr, textX, textY);
+    if (!useFrame) ctx.fillText(timeStr, textX, textY);
     ctx.globalCompositeOperation = "source-over";
     ctx.shadowBlur = 0;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
 
     ctx.filter = "none";
+    if (flashEnabled) {
+      setFlash(false);
+    }
+
+    if (torchTrack) {
+      torchTrack.applyConstraints({ advanced: [{ torch: false } as any] }).catch(console.warn);
+    }
 
     canvas.toBlob((blob) => {
       if (blob) {
@@ -434,28 +498,40 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
       <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-16 sm:px-24">
         <div className="w-full aspect-[3/4] max-w-[320px] bg-black rounded-[32px] p-1.5 shadow-[0_15px_35px_rgba(0,0,0,0.8),inset_0_2px_5px_rgba(255,255,255,0.1),inset_0_-2px_5px_rgba(0,0,0,0.5)] border-4 border-neutral-800 relative">
           
-          <div className="w-full h-full rounded-[24px] overflow-hidden relative shadow-[inset_0_8px_20px_rgba(0,0,0,1)] bg-neutral-900 border-2 border-black">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`absolute inset-0 w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
-              style={{ filter: activePreset.cssFilter, transition: 'filter 0.5s' }}
-            />
-            
-            {/* Viewfinder Glass Reflection */}
-            <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/10 to-white/0 pointer-events-none" />
-            
-            {/* Flash overlay */}
-            {flash && <div className="absolute inset-0 bg-white z-50 pointer-events-none opacity-90" />}
+          <div className="w-full h-full relative">
+            {/* Live Camera Feed & Frame */}
+            <div className={`absolute inset-0 overflow-hidden shadow-[inset_0_8px_20px_rgba(0,0,0,1)] border-2 border-black transition-all duration-300 ${useFrame ? 'bg-[#F8F8F8] p-[6%] pb-[25%] rounded-[8px]' : 'bg-neutral-900 rounded-[24px] p-0'}`}>
+              <div className={`relative w-full h-full overflow-hidden ${useFrame ? 'shadow-[inset_0_0_10px_rgba(0,0,0,0.2)]' : 'rounded-[24px]'}`}>
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`absolute inset-0 w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
+                  style={{ filter: activePreset.cssFilter, transition: 'filter 0.5s' }}
+                />
+                
+                {/* Viewfinder Glass Reflection */}
+                <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/10 to-white/0 pointer-events-none" />
+                
+                {/* Flash overlay (Back camera visual effect) */}
+                {flash && facingMode === "environment" && <div className="absolute inset-0 bg-white z-50 pointer-events-none opacity-90" />}
+              </div>
+
+              {/* Live Timestamp (only visible in viewfinder if useFrame is true) */}
+              {useFrame && (
+                 <div className="absolute bottom-[6%] left-0 w-full text-center text-[#444] font-bold pointer-events-none" style={{ fontFamily: '"Comic Sans MS", cursive, sans-serif', fontSize: 'clamp(14px, 4vw, 20px)' }}>
+                   '{String(new Date().getFullYear()).slice(-2)} {String(new Date().getMonth() + 1).padStart(2, '0')} {String(new Date().getDate()).padStart(2, '0')}
+                 </div>
+              )}
+            </div>
             
             {/* Preview Overlay */}
             {previewBlob && (
-              <div className="absolute inset-0 z-20 bg-black flex flex-col">
+              <div className="absolute inset-0 z-20 bg-neutral-950 flex flex-col rounded-[24px] overflow-hidden">
                  <img 
                    src={URL.createObjectURL(previewBlob)} 
-                   className="absolute inset-0 w-full h-full object-cover" 
+                   className={`absolute inset-0 w-full h-full ${useFrame ? 'object-contain p-2' : 'object-cover'}`} 
                    alt="Preview" 
                  />
                  <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 to-transparent flex justify-between items-end">
@@ -472,6 +548,11 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
         </div>
       </div>
 
+      {/* Front Camera Full-Screen Flash Overlay */}
+      {flash && facingMode === "user" && (
+        <div className="fixed inset-0 bg-white z-[200] pointer-events-none" />
+      )}
+
       {/* Dial & Shutter Area */}
       <div className="relative z-10 w-full pb-4 sm:pb-8 flex flex-col items-center">
         {/* Dial Indicator */}
@@ -486,15 +567,20 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
 
         {/* Shutter row */}
         <div className="flex w-full px-8 sm:px-12 items-center justify-between">
-           {/* Left button: Camera Swap & Counter */}
-           <div className="w-16 flex justify-start">
+           {/* Left button: Camera Swap, Frame Toggle, Counter */}
+           <div className="w-20 flex justify-start">
              <div className="flex flex-col items-center gap-2">
                <div className="bg-neutral-800 text-neutral-400 text-[10px] font-bold px-3 py-1 rounded-full shadow-inner border border-neutral-700">
                  {String(photosTaken).padStart(2, "0")}
                </div>
-               <button onClick={toggleCamera} className="w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center text-orange-500 border border-neutral-700 shadow-inner">
-                 <RefreshCcw size={18} />
-               </button>
+               <div className="flex gap-1">
+                 <button onClick={toggleCamera} className={`w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center border border-neutral-700 shadow-inner ${isBW ? 'text-neutral-300' : 'text-orange-500'}`}>
+                   <RefreshCcw size={16} />
+                 </button>
+                 <button onClick={() => setUseFrame(!useFrame)} className={`w-10 h-10 ${useFrame ? 'bg-white text-black border-white shadow-[0_0_10px_rgba(255,255,255,0.5)]' : 'bg-neutral-800 text-neutral-400 border-neutral-700'} rounded-xl flex items-center justify-center border shadow-inner transition-all`}>
+                   <Square size={16} />
+                 </button>
+               </div>
              </div>
            </div>
 
@@ -502,11 +588,11 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
            <button
              onClick={capturePhoto}
              disabled={isCapturing || !!previewBlob}
-             className="w-20 h-20 sm:w-24 sm:h-24 shrink-0 rounded-full bg-orange-500 shadow-[0_5px_15px_rgba(0,0,0,0.5),inset_0_2px_4px_rgba(255,255,255,0.4),inset_0_-4px_8px_rgba(0,0,0,0.3)] border-4 border-neutral-800 active:scale-95 transition-transform flex items-center justify-center relative disabled:opacity-50"
+             className={`w-20 h-20 sm:w-24 sm:h-24 shrink-0 rounded-full ${isBW ? 'bg-neutral-300' : 'bg-orange-500'} shadow-[0_5px_15px_rgba(0,0,0,0.5),inset_0_2px_4px_rgba(255,255,255,0.4),inset_0_-4px_8px_rgba(0,0,0,0.3)] border-4 border-neutral-800 active:scale-95 transition-transform flex items-center justify-center relative disabled:opacity-50`}
            />
 
            {/* Right button: Flash */}
-           <div className="w-16 flex justify-end">
+           <div className="w-20 flex justify-end">
              <div className="flex items-center gap-2">
                <button 
                  onClick={() => setFlashEnabled(!flashEnabled)}
@@ -542,12 +628,12 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
 
       {/* Bottom Footer Area */}
       <div className="relative z-10 w-full p-4 flex justify-between items-center border-t border-neutral-800 bg-neutral-950/90 backdrop-blur-md">
-         <button onClick={openGallery} className="w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center text-orange-500 shadow-inner">
+         <button onClick={openGallery} className={`w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center shadow-inner ${isBW ? 'text-neutral-300' : 'text-orange-500'}`}>
            <ImageIcon size={20} />
          </button>
          
          <div className="flex items-center gap-2 bg-neutral-800/80 pl-1 pr-4 py-1 rounded-full shadow-inner border border-neutral-800">
-            <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold relative">
+            <div className={`w-8 h-8 rounded-full ${isBW ? 'bg-neutral-500' : 'bg-orange-500'} flex items-center justify-center text-white text-xs font-bold relative`}>
               S
               <div className="absolute top-0 left-0 w-2 h-2 bg-yellow-400 rounded-full border border-black shadow-sm" />
             </div>
@@ -557,7 +643,7 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
             </div>
          </div>
 
-         <div className="w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center text-orange-500 shadow-inner">
+         <div className={`w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center shadow-inner ${isBW ? 'text-neutral-300' : 'text-orange-500'}`}>
            <Camera size={20} />
          </div>
       </div>
