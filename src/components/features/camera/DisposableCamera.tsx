@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import imageCompression from "browser-image-compression";
+import JSZip from "jszip";
 import { defaultPreset } from "@/lib/presets";
 import { savePhotoLocally, getAllPhotos, PhotoRecord } from "@/lib/idb";
-import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle } from "lucide-react";
+import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle, Download, CheckSquare } from "lucide-react";
 
 interface DisposableCameraProps {
   eventId: string;
@@ -22,6 +23,76 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   const [showGallery, setShowGallery] = useState(false);
   const [galleryPhotos, setGalleryPhotos] = useState<PhotoRecord[]>([]);
+  const [selectedPhotoUrl, setSelectedPhotoUrl] = useState<string | null>(null);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedForDownload, setSelectedForDownload] = useState<Set<string>>(new Set());
+
+  const downloadSinglePhoto = (url: string) => {
+    const guestName = localStorage.getItem("snapmoment_guest_name") || "tamu";
+    const safeName = guestName.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `snapmoment-${safeName}-${Date.now()}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const downloadSelectedPhotos = async () => {
+    const photosToDownload = isSelectionMode && selectedForDownload.size > 0 
+      ? galleryPhotos.filter(p => selectedForDownload.has(p.client_photo_id))
+      : galleryPhotos;
+
+    if (photosToDownload.length === 0) return;
+
+    if (photosToDownload.length === 1) {
+      const url = URL.createObjectURL(photosToDownload[0].blob);
+      downloadSinglePhoto(url);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setIsSelectionMode(false);
+      setSelectedForDownload(new Set());
+      return;
+    }
+
+    try {
+      const guestName = localStorage.getItem("snapmoment_guest_name") || "tamu";
+      const safeName = guestName.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+
+      const zip = new JSZip();
+      photosToDownload.forEach((photo, index) => {
+        zip.file(`snapmoment-${safeName}-${index + 1}-${photo.timestamp}.jpg`, photo.blob);
+      });
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `snapmoment-gallery-${safeName}-${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setIsSelectionMode(false);
+      setSelectedForDownload(new Set());
+    } catch (err) {
+      console.error("Error creating zip:", err);
+      alert("Gagal mengunduh foto.");
+    }
+  };
+
+  const toggleSelection = (id: string) => {
+    setSelectedForDownload(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  };
 
   // Fallback device id
   const [guestId, setGuestId] = useState("");
@@ -290,10 +361,38 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
       {showGallery && (
         <div className="fixed inset-0 z-[100] bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
           <div className="p-4 flex justify-between items-center bg-neutral-900 border-b border-neutral-800 shrink-0">
-            <h2 className="text-xl font-bold text-white">Galeri Anda</h2>
-            <button onClick={() => setShowGallery(false)} className="p-2 bg-neutral-800 rounded-full text-white">
-              <X size={20} />
-            </button>
+            <h2 className="text-xl font-bold text-white">
+              {isSelectionMode ? `${selectedForDownload.size} Dipilih` : "Galeri Anda"}
+            </h2>
+            <div className="flex items-center gap-2">
+              {galleryPhotos.length > 0 && (
+                <>
+                  <button 
+                    onClick={() => {
+                      setIsSelectionMode(!isSelectionMode);
+                      if (isSelectionMode) setSelectedForDownload(new Set());
+                    }} 
+                    className={`p-2 rounded-full text-white transition-colors ${isSelectionMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-neutral-800 hover:bg-neutral-700'}`}
+                  >
+                    <CheckSquare size={20} />
+                  </button>
+                  <button 
+                    onClick={downloadSelectedPhotos} 
+                    disabled={isSelectionMode && selectedForDownload.size === 0}
+                    className="p-2 bg-neutral-800 rounded-full text-white hover:bg-neutral-700 transition-colors disabled:opacity-50"
+                  >
+                    <Download size={20} />
+                  </button>
+                </>
+              )}
+              <button onClick={() => {
+                setShowGallery(false);
+                setIsSelectionMode(false);
+                setSelectedForDownload(new Set());
+              }} className="p-2 bg-neutral-800 rounded-full text-white hover:bg-neutral-700 transition-colors">
+                <X size={20} />
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
             {galleryPhotos.length === 0 ? (
@@ -305,9 +404,27 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
               <div className="grid grid-cols-3 gap-2">
                 {galleryPhotos.map((p) => {
                   const url = URL.createObjectURL(p.blob);
+                  const isSelected = selectedForDownload.has(p.client_photo_id);
                   return (
-                    <div key={p.client_photo_id} className="aspect-square bg-neutral-800 rounded-lg overflow-hidden relative shadow-md">
+                    <div 
+                      key={p.client_photo_id} 
+                      onClick={() => {
+                        if (isSelectionMode) {
+                          toggleSelection(p.client_photo_id);
+                        } else {
+                          setSelectedPhotoUrl(url);
+                        }
+                      }} 
+                      className={`cursor-pointer aspect-square bg-neutral-800 rounded-lg overflow-hidden relative shadow-md transition-all ${isSelected ? 'ring-2 ring-blue-500 scale-95 opacity-80' : ''}`}
+                    >
                       <img src={url} className="w-full h-full object-cover" alt="Saved photo" />
+                      {isSelectionMode && isSelected && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-blue-500/20">
+                          <div className="bg-blue-500 rounded-full p-1 text-white">
+                            <Check size={20} />
+                          </div>
+                        </div>
+                      )}
                       {p.status === 'pending' && <div className="absolute top-1 right-1 bg-yellow-500 w-2 h-2 rounded-full shadow-sm" />}
                       {p.status === 'uploading' && <div className="absolute top-1 right-1 bg-blue-500 w-2 h-2 rounded-full animate-pulse shadow-sm" />}
                       {p.status === 'uploaded' && <div className="absolute top-1 right-1 bg-green-500 w-2 h-2 rounded-full shadow-sm" />}
@@ -318,6 +435,23 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
               </div>
             )}
           </div>
+
+          {/* Fullscreen Photo Preview from Gallery */}
+          {selectedPhotoUrl && (
+            <div className="fixed inset-0 z-[110] bg-black flex flex-col animate-in fade-in zoom-in duration-200">
+              <div className="p-4 flex justify-end absolute top-0 w-full z-10 gap-2">
+                <button onClick={() => downloadSinglePhoto(selectedPhotoUrl)} className="p-2 bg-neutral-800/80 rounded-full text-white backdrop-blur-md hover:bg-neutral-700/80 transition-colors">
+                  <Download size={20} />
+                </button>
+                <button onClick={() => setSelectedPhotoUrl(null)} className="p-2 bg-neutral-800/80 rounded-full text-white backdrop-blur-md hover:bg-neutral-700/80 transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="flex-1 flex items-center justify-center">
+                <img src={selectedPhotoUrl} className="w-full h-full object-contain" alt="Full preview" />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
