@@ -190,10 +190,18 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
 
     setIsCapturing(true);
 
+    // Haptic & Sound (Shutter)
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(40);
+    try {
+      const clickSound = new Audio('/sounds/shutter.mp3');
+      clickSound.volume = 0.5;
+      clickSound.play().catch(e => console.warn("Audio play blocked", e));
+    } catch(e){}
+
     // Screen flash effect if flash is enabled
     if (flashEnabled) {
       setFlash(true);
-      setTimeout(() => setFlash(false), 100);
+      setTimeout(() => setFlash(false), 150);
     }
 
     const video = videoRef.current;
@@ -228,6 +236,7 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
     ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
     
     // Reset filter and transform
+    ctx.filter = "none";
     if (facingMode === "user") {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
@@ -293,6 +302,28 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
       }
     }
     
+    // 4. Date-Cam Timestamp
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2);
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const timeStr = `'${yy} ${mm} ${dd}`;
+
+    ctx.font = `bold ${Math.floor(targetWidth * 0.035)}px monospace`;
+    ctx.fillStyle = "#FF5500"; // Bright orange
+    ctx.shadowColor = "rgba(255,0,0,0.8)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
+    ctx.textAlign = "right";
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillText(timeStr, targetWidth - (targetWidth * 0.05), targetHeight - (targetHeight * 0.05));
+    ctx.fillText(timeStr, targetWidth - (targetWidth * 0.05), targetHeight - (targetHeight * 0.05)); // Double draw for punchiness
+    ctx.globalCompositeOperation = "source-over";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
     ctx.filter = "none";
 
     canvas.toBlob((blob) => {
@@ -307,6 +338,15 @@ export function DisposableCamera({ eventId, isOnline = true, pendingCount = 0 }:
 
   const confirmPhoto = async () => {
     if (!previewBlob) return;
+
+    // Haptic & Sound (Winding)
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([30, 50, 30, 50, 30, 50]);
+    try {
+      const windSound = new Audio('/sounds/wind.mp3');
+      windSound.volume = 0.5;
+      windSound.play().catch(e => console.warn("Audio play blocked", e));
+    } catch(e){}
+
     try {
       const client_photo_id = crypto.randomUUID();
       await savePhotoLocally({
