@@ -9,11 +9,13 @@ Satu event kawinan nyata, tanggal sudah fix. User (tamu) buka link/QR di HP, lan
 ## In Scope (v0)
 
 ### 1. Satu event, setup manual/hardcoded
+
 - Tidak perlu form "buat event" yang fleksibel. Cukup 1 event record di database (bisa di-insert manual lewat Prisma Studio/seed script), berisi: nama acara, tanggal, 1 preset filter default.
 - Link tamu: `/e/{slug}` dengan slug fix, misal `/e/pernikahan-nama-teman`.
 - QR code di-generate dari slug ini (bisa pakai generator online sekali pakai untuk print, tidak perlu fitur "download QR" otomatis di v0).
 
 ### 2. Kamera — desain disposable camera (INI FOKUS UTAMA)
+
 - Layar full-screen, viewfinder kamera pakai `getUserMedia` (kamera belakang default, `facingMode: environment`).
 - **UI dibungkus visual seperti body kamera disposable fisik**, bukan UI kamera browser polos:
   - Viewfinder ditampilkan sebagai jendela kecil di tengah (bukan full bleed), dikelilingi "body" kamera bewarna solid (misal kuning/hijau ala Kodak FunSaver, sesuai preset event) dengan sudut membulat meniru plastik kamera
@@ -24,12 +26,34 @@ Satu event kawinan nyata, tanggal sudah fix. User (tamu) buka link/QR di HP, lan
 - Counter naik setiap berhasil motret. **Tidak perlu batas hard limit di v0** — kalau tamu banyak motret, biarkan saja, jangan blokir (fitur kuota tamu di `01-FEATURES-MVP.md` DITUNDA).
 
 ### 3. Simpan ke cloud
-- Foto dikompres client-side dulu (target ~300-500KB) sebelum upload — pakai `browser-image-compression` atau canvas manual.
+
+**Spesifikasi kompresi (WAJIB diikuti persis, jangan improvisasi angka lain):**
+
+| Parameter           | Nilai                                                                 |
+| ------------------- | --------------------------------------------------------------------- |
+| Format output       | WebP (bukan JPEG — WebP 25-35% lebih kecil di kualitas visual setara) |
+| Resolusi maksimum   | 2000px di sisi terpanjang, maintain aspect ratio (jangan crop paksa)  |
+| Quality             | 78%                                                                   |
+| Target ukuran hasil | ~200-350KB per foto                                                   |
+
+**Urutan proses (urutan ini penting, jangan dibalik):**
+
+1. Capture foto dari kamera (resolusi native device)
+2. Resize ke resolusi kerja (max 2000px sisi terpanjang) — pakai `canvas` (`drawImage` + scale) atau `browser-image-compression` dengan opsi resize
+3. Terapkan filter preset (CSS filter + grain/overlay PNG dari `lib/presets.ts`) — **setelah** resize, bukan sebelum, supaya efek grain tidak "hilang"/flat akibat downscale belakangan
+4. Encode ke WebP quality 78%
+5. Simpan hasil ke IndexedDB (status `pending`) sebelum masuk upload queue (lihat bagian 4 PWA)
+
+**Alasan singkat:** resolusi kerja 2000px sudah cukup tajam untuk full-screen HP bahkan saat di-zoom, dan cukup untuk cetak ukuran 4R-5R kalau ada tamu yang mau cetak — tidak perlu simpan resolusi native kamera (bisa 12MP+) yang jauh lebih berat tanpa manfaat tambahan untuk use-case ini. Tidak perlu sistem thumbnail terpisah di v0 — 1 file per foto di resolusi kerja ini sudah cukup ringan untuk ditampilkan di galeri maupun didownload personal.
+
 - Upload ke **Supabase Storage** (bukan Cloudflare R2 dulu di v0 — alasan: kalau sudah pakai Supabase untuk database, satu provider lebih cepat setup daripada nambah R2 + kredensial terpisah; migrasi ke R2 bisa nanti kalau volume besar).
 - Foto tersimpan dengan referensi ke `event_id` (hardcoded event yang sama untuk semua tamu di v0 ini) dan `client_photo_id` (untuk idempotency saat retry).
 - **Tidak perlu tabel `guests` dengan nama/whatsapp di v0.** Cukup `device_id` random yang digenerate sekali dan disimpan di localStorage, dipakai untuk asosiasi foto ke "siapa yang motret" secara teknis saja (untuk keperluan galeri nanti kalau perlu difilter). Tidak perlu tamu mengisi nama di v0 kecuali kamu mau tetap tambahkan field nama opsional simpel (boleh, tapi tanpa validasi rumit).
 
+**Estimasi kapasitas storage** (untuk sanity check, bukan blocker): 1 event ±100 tamu × 5 foto rata-rata = 500 foto × ~250KB ≈ 125MB per event. Supabase Storage free tier (1GB) cukup untuk ±8 event seukuran ini — storage bukan risiko utama di skala v0 ini, risiko utama tetap di sisi upload saat sinyal lemah (sudah ditangani di bagian PWA di bawah).
+
 ### 4. PWA — wajib berfungsi tanpa sinyal stabil
+
 - `manifest.json` lengkap (nama app, ikon, `display: standalone`, warna tema) supaya bisa di-"Add to Home Screen" dari browser HP tamu.
 - Service worker meng-cache app shell (HTML/CSS/JS halaman kamera) supaya halaman tetap bisa dibuka meski sinyal hilang total setelah pertama kali load.
 - **Upload queue offline-first**, ini bagian paling kritis:
@@ -42,6 +66,7 @@ Satu event kawinan nyata, tanggal sudah fix. User (tamu) buka link/QR di HP, lan
   - Tutup browser/app di tengah ada foto pending → buka lagi → foto pending masih ada di queue, lanjut coba upload
 
 ### 5. Galeri sangat minim (opsional, kalau waktu cukup)
+
 - Cukup 1 halaman `/e/{slug}/gallery` yang menampilkan grid semua foto yang sudah terupload (tanpa mekanisme reveal/hidden-sampai-waktu-tertentu dulu — itu fitur `01-FEATURES-MVP.md` yang DITUNDA).
 - Kalau waktu benar-benar mepet, galeri ini boleh dilewati dulu untuk hari-H — yang penting foto sudah aman tersimpan di cloud, galeri bisa disusulkan H+1/H+2 setelah acara selesai karena datanya sudah ada.
 

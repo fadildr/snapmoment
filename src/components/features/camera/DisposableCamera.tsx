@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import imageCompression from "browser-image-compression";
+
 import JSZip from "jszip";
-import { defaultPreset } from "@/lib/presets";
+import { defaultPreset, presets, Preset } from "@/lib/presets";
 import { savePhotoLocally, getAllPhotos, PhotoRecord } from "@/lib/idb";
 import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle, Download, CheckSquare } from "lucide-react";
 
@@ -20,6 +20,7 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
   const [flash, setFlash] = useState(false); // For screen overlay
   const [flashEnabled, setFlashEnabled] = useState(false); // For torch and logic
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const [activePreset, setActivePreset] = useState<Preset>(defaultPreset);
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   const [showGallery, setShowGallery] = useState(false);
   const [galleryPhotos, setGalleryPhotos] = useState<PhotoRecord[]>([]);
@@ -198,47 +199,108 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Set canvas dimensions to match video stream
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Calculate new dimensions (max 2000px longest side)
+    const maxDim = 2000;
+    let targetWidth = video.videoWidth;
+    let targetHeight = video.videoHeight;
+    
+    if (targetWidth > maxDim || targetHeight > maxDim) {
+      if (targetWidth > targetHeight) {
+        targetHeight = Math.floor(targetHeight * (maxDim / targetWidth));
+        targetWidth = maxDim;
+      } else {
+        targetWidth = Math.floor(targetWidth * (maxDim / targetHeight));
+        targetHeight = maxDim;
+      }
+    }
+
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
 
     // Apply the preset filter to the context before drawing
-    ctx.filter = defaultPreset.cssFilter;
+    ctx.filter = activePreset.cssFilter;
     if (facingMode === "user") {
-      ctx.translate(canvas.width, 0);
+      ctx.translate(targetWidth, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+    
     // Reset filter and transform
     if (facingMode === "user") {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
+    
+    // 1. Light Leak (Randomized)
+    if (activePreset.hasLightLeak && Math.random() > 0.6) {
+      const leakGradient = ctx.createLinearGradient(0, 0, targetWidth * 0.4, targetHeight * 0.5);
+      leakGradient.addColorStop(0, "rgba(255, 60, 0, 0.4)"); // bright orange/red
+      leakGradient.addColorStop(1, "rgba(255, 0, 0, 0)");
+      ctx.fillStyle = leakGradient;
+      ctx.globalCompositeOperation = "screen";
+      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    // 2. Vignette
+    if (activePreset.hasVignette) {
+      const gradient = ctx.createRadialGradient(
+        targetWidth / 2, targetHeight / 2, Math.min(targetWidth, targetHeight) * 0.4,
+        targetWidth / 2, targetHeight / 2, Math.max(targetWidth, targetHeight) * 0.75
+      );
+      gradient.addColorStop(0, "rgba(0,0,0,0)");
+      gradient.addColorStop(1, "rgba(0,0,0,0.7)");
+      ctx.fillStyle = gradient;
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      ctx.globalCompositeOperation = "source-over";
+    }
+    
+    // Algorithmic Grain/Noise Generator
+    if (activePreset.grainIntensity && activePreset.grainIntensity > 0) {
+      // Create a small offscreen canvas for noise pattern
+      const noiseCanvas = document.createElement("canvas");
+      noiseCanvas.width = 256;
+      noiseCanvas.height = 256;
+      const nCtx = noiseCanvas.getContext("2d");
+      if (nCtx) {
+        const idata = nCtx.createImageData(256, 256);
+        const buffer32 = new Uint32Array(idata.data.buffer);
+        const len = buffer32.length;
+        
+        for (let i = 0; i < len; i++) {
+          if (Math.random() < 0.5) {
+             buffer32[i] = 0xff000000; // Black pixel
+          } else {
+             buffer32[i] = 0x00000000; // Transparent pixel
+          }
+        }
+        nCtx.putImageData(idata, 0, 0);
+        
+        // Draw noise over the main canvas
+        const pattern = ctx.createPattern(noiseCanvas, "repeat");
+        if (pattern) {
+          ctx.globalAlpha = activePreset.grainIntensity;
+          ctx.fillStyle = pattern;
+          ctx.globalCompositeOperation = "overlay";
+          ctx.fillRect(0, 0, targetWidth, targetHeight);
+          
+          // Reset context states
+          ctx.globalCompositeOperation = "source-over";
+          ctx.globalAlpha = 1.0;
+        }
+      }
+    }
+    
     ctx.filter = "none";
 
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        setIsCapturing(false);
-        return;
+    canvas.toBlob((blob) => {
+      if (blob) {
+        setPreviewBlob(blob);
+      } else {
+        alert("Gagal memproses foto.");
       }
-
-      try {
-        // Compress the image
-        const options = {
-          maxSizeMB: 0.5,
-          maxWidthOrHeight: 1920,
-          useWebWorker: true,
-        };
-        const compressedFile = await imageCompression(new File([blob], "photo.jpg", { type: "image/jpeg" }), options);
-
-        // Show preview instead of immediately saving
-        setPreviewBlob(compressedFile);
-      } catch (error) {
-        console.error("Error saving photo locally:", error);
-        alert("Gagal menyimpan foto. Memori mungkin penuh.");
-      } finally {
-        setIsCapturing(false);
-      }
-    }, "image/jpeg", 0.95);
+      setIsCapturing(false);
+    }, "image/webp", 0.78);
   };
 
   const confirmPhoto = async () => {
@@ -278,110 +340,171 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
   };
 
   return (
-    <div
-      className="flex-1 w-full flex flex-col items-center justify-center p-4 relative touch-none"
-      style={{ backgroundColor: defaultPreset.cameraBodyColor }}
-    >
-      {/* Flash overlay */}
-      {flash && <div className="absolute inset-0 bg-white z-50 pointer-events-none opacity-80" />}
+    <div className="fixed inset-0 w-full h-full bg-neutral-900 touch-none flex flex-col overflow-hidden font-sans select-none">
+      
+      {/* CSS Texture for leather body */}
+      <div 
+        className="absolute inset-0 opacity-40 pointer-events-none mix-blend-overlay z-0" 
+        style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")` }}
+      />
 
-      {/* Disposable Camera UI Wrapper */}
-      <div className="w-full max-w-sm aspect-[3/4] bg-neutral-900 rounded-[40px] p-6 shadow-2xl relative flex flex-col items-center border-[8px] border-black overflow-hidden">
-        
-        {/* Top bar (Counter & Viewfinder accent) */}
-        <div className="w-full flex justify-between items-start mb-6">
-          {/* Flash toggle UI */}
-          <button 
-            onClick={() => setFlashEnabled((prev) => !prev)}
-            className={`w-12 h-6 rounded-full border-2 border-black flex items-center px-1 shadow-inner transition-colors ${
-              flashEnabled ? "bg-green-500 justify-end" : "bg-red-600 justify-start"
-            }`}
-          >
-            <div className="w-4 h-4 bg-white rounded-full flex items-center justify-center">
-              <Zap size={10} className={flashEnabled ? "text-green-500" : "text-red-600"} />
-            </div>
-          </button>
+      {/* Side Color Bands based on preset */}
+      <div className="absolute top-[20%] bottom-[25%] left-0 w-12 sm:w-16 bg-white z-0 flex flex-col justify-around py-10 shadow-[inset_-5px_0_15px_rgba(0,0,0,0.3)]">
+        {[...Array(15)].map((_, i) => (
+          <div key={i} className="w-full h-2 sm:h-3" style={{ backgroundColor: activePreset.cameraBodyColor }} />
+        ))}
+      </div>
+      <div className="absolute top-[20%] bottom-[25%] right-0 w-12 sm:w-16 bg-white z-0 flex flex-col justify-around py-10 shadow-[inset_5px_0_15px_rgba(0,0,0,0.3)]">
+        {[...Array(15)].map((_, i) => (
+          <div key={i} className="w-full h-2 sm:h-3" style={{ backgroundColor: activePreset.cameraBodyColor }} />
+        ))}
+      </div>
 
-          {/* Frame Counter */}
-          <div className="bg-black text-[#FFD700] font-mono text-xl px-3 py-1 rounded-sm shadow-[inset_0_2px_4px_rgba(255,255,255,0.2)] border-2 border-neutral-700 font-bold tracking-widest bg-opacity-80 flex items-center">
-            {String(photosTaken).padStart(2, "0")}
-            <span className="text-xs ml-1 opacity-50">EXP</span>
+      {/* Top Bar */}
+      <div className="relative z-10 w-full flex justify-between items-center p-4 sm:p-6 pt-12 sm:pt-16 text-neutral-400 font-bold text-xs uppercase tracking-widest">
+         <div className="flex items-center gap-1 bg-neutral-800/80 px-3 py-1.5 rounded-full shadow-inner border border-neutral-700">
+           <span>&lt; CAMERAS</span>
+         </div>
+         <div className="flex items-center">
+           <span>7 HR</span>
+           <span className="inline-block w-2 h-2 rounded-full bg-green-500 ml-2 shadow-[0_0_5px_#22c55e]" />
+         </div>
+      </div>
+
+      {/* Viewfinder Center */}
+      <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-16 sm:px-24">
+        <div className="w-full aspect-[3/4] max-w-[320px] bg-black rounded-[32px] p-1.5 shadow-[0_15px_35px_rgba(0,0,0,0.8),inset_0_2px_5px_rgba(255,255,255,0.1),inset_0_-2px_5px_rgba(0,0,0,0.5)] border-4 border-neutral-800 relative">
+          
+          <div className="w-full h-full rounded-[24px] overflow-hidden relative shadow-[inset_0_8px_20px_rgba(0,0,0,1)] bg-neutral-900 border-2 border-black">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`absolute inset-0 w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
+              style={{ filter: activePreset.cssFilter, transition: 'filter 0.5s' }}
+            />
+            
+            {/* Viewfinder Glass Reflection */}
+            <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/10 to-white/0 pointer-events-none" />
+            
+            {/* Flash overlay */}
+            {flash && <div className="absolute inset-0 bg-white z-50 pointer-events-none opacity-90" />}
+            
+            {/* Preview Overlay */}
+            {previewBlob && (
+              <div className="absolute inset-0 z-20 bg-black flex flex-col">
+                 <img 
+                   src={URL.createObjectURL(previewBlob)} 
+                   className="absolute inset-0 w-full h-full object-cover" 
+                   alt="Preview" 
+                 />
+                 <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 to-transparent flex justify-between items-end">
+                   <button onClick={retakePhoto} className="flex flex-col items-center justify-center p-2 text-white/80 hover:text-white drop-shadow-md">
+                     <XCircle size={32} className="text-red-400 mb-1" />
+                   </button>
+                   <button onClick={confirmPhoto} className="flex flex-col items-center justify-center p-2 text-white/80 hover:text-white drop-shadow-md">
+                     <Check size={40} className="text-green-400 mb-1" />
+                   </button>
+                 </div>
+              </div>
+            )}
           </div>
-        </div>
-
-        {/* Viewfinder (Video element) */}
-        <div className="relative w-full aspect-[3/4] bg-black rounded-2xl overflow-hidden border-4 border-neutral-800 shadow-inner">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className={`absolute inset-0 w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
-            style={{ filter: defaultPreset.cssFilter }} // Show filter live in preview
-          />
-          {/* Viewfinder Reticle */}
-          <div className="absolute inset-0 pointer-events-none opacity-30 flex items-center justify-center">
-             <div className="w-1/2 h-1/2 border border-white border-dashed opacity-50 rounded-lg"></div>
-          </div>
-          {/* Preview Overlay */}
-          {previewBlob && (
-            <div className="absolute inset-0 z-20 bg-black flex flex-col">
-               <img 
-                 src={URL.createObjectURL(previewBlob)} 
-                 className="absolute inset-0 w-full h-full object-cover" 
-                 alt="Preview" 
-               />
-               <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 to-transparent flex justify-between items-end">
-                 <button onClick={retakePhoto} className="flex flex-col items-center justify-center p-2 text-white/80 hover:text-white drop-shadow-md">
-                   <XCircle size={36} className="text-red-400 mb-1" />
-                   <span className="text-[10px] font-bold">BUANG</span>
-                 </button>
-                 <button onClick={confirmPhoto} className="flex flex-col items-center justify-center p-2 text-white/80 hover:text-white drop-shadow-md">
-                   <Check size={44} className="text-green-400 mb-1" />
-                   <span className="text-[10px] font-bold shadow-black">SIMPAN</span>
-                 </button>
-               </div>
-            </div>
-          )}
-
-          {/* Camera Switch button */}
-          <button 
-            onClick={toggleCamera}
-            className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full backdrop-blur-sm z-10 hover:bg-black/70 transition-colors"
-          >
-            <RefreshCcw size={16} />
-          </button>
-        </div>
-
-        {/* Hidden Canvas for processing */}
-        <canvas ref={canvasRef} className="hidden" />
-
-        {/* Shutter Button area */}
-        <div className="mt-8 relative w-full flex items-center justify-center">
-          <div className="flex-1 flex justify-center">
-             <button onClick={openGallery} className="w-12 h-12 bg-neutral-800 rounded-full border-2 border-neutral-700 flex items-center justify-center text-neutral-400 hover:text-white active:bg-neutral-700 transition-colors shadow-inner">
-               <ImageIcon size={20} />
-             </button>
-          </div>
-          <button
-            onClick={capturePhoto}
-            disabled={isCapturing || !!previewBlob}
-            className="w-24 h-24 shrink-0 rounded-full bg-red-600 border-[6px] border-black shadow-[0_4px_0_rgb(0,0,0),inset_0_-4px_8px_rgba(0,0,0,0.3),inset_0_4px_8px_rgba(255,255,255,0.4)] active:translate-y-1 active:shadow-[0_0px_0_rgb(0,0,0),inset_0_-2px_4px_rgba(0,0,0,0.3)] transition-all flex items-center justify-center disabled:opacity-50"
-          >
-            <Camera className="text-black opacity-30" size={32} />
-          </button>
-        </div>
-        
-        {/* Branding/Text */}
-        <div className="mt-auto pt-4 text-center">
-          <p className="font-black text-2xl tracking-tighter text-black uppercase opacity-20 transform -skew-x-6">
-            SnapMoment
-          </p>
-          <p className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mt-1">
-            {defaultPreset.name}
-          </p>
         </div>
       </div>
+
+      {/* Dial & Shutter Area */}
+      <div className="relative z-10 w-full pb-4 sm:pb-8 flex flex-col items-center">
+        {/* Dial Indicator */}
+        <div className="w-32 h-8 relative overflow-hidden mb-2 opacity-60">
+           <div className="absolute w-[200%] h-[200%] border-t-2 border-dashed border-white/50 rounded-full left-1/2 -translate-x-1/2 top-4"></div>
+           <div className="absolute top-0 left-1/2 -translate-x-1/2 text-[10px] font-bold text-white flex gap-4">
+             <span>0.5x</span>
+             <span className="text-yellow-500 font-black">1x</span>
+             <span>2x</span>
+           </div>
+        </div>
+
+        {/* Shutter row */}
+        <div className="flex w-full px-8 sm:px-12 items-center justify-between">
+           {/* Left button: Camera Swap & Counter */}
+           <div className="w-16 flex justify-start">
+             <div className="flex flex-col items-center gap-2">
+               <div className="bg-neutral-800 text-neutral-400 text-[10px] font-bold px-3 py-1 rounded-full shadow-inner border border-neutral-700">
+                 {String(photosTaken).padStart(2, "0")}
+               </div>
+               <button onClick={toggleCamera} className="w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center text-orange-500 border border-neutral-700 shadow-inner">
+                 <RefreshCcw size={18} />
+               </button>
+             </div>
+           </div>
+
+           {/* Center Shutter */}
+           <button
+             onClick={capturePhoto}
+             disabled={isCapturing || !!previewBlob}
+             className="w-20 h-20 sm:w-24 sm:h-24 shrink-0 rounded-full bg-orange-500 shadow-[0_5px_15px_rgba(0,0,0,0.5),inset_0_2px_4px_rgba(255,255,255,0.4),inset_0_-4px_8px_rgba(0,0,0,0.3)] border-4 border-neutral-800 active:scale-95 transition-transform flex items-center justify-center relative disabled:opacity-50"
+           />
+
+           {/* Right button: Flash */}
+           <div className="w-16 flex justify-end">
+             <div className="flex items-center gap-2">
+               <button 
+                 onClick={() => setFlashEnabled(!flashEnabled)}
+                 className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg border-2 transition-colors ${flashEnabled ? 'bg-white border-white text-yellow-500 shadow-[0_0_15px_rgba(255,255,255,0.5)]' : 'bg-neutral-300 border-neutral-400 text-neutral-500'}`}
+               >
+                 <Zap size={20} fill={flashEnabled ? "currentColor" : "none"} />
+               </button>
+               {/* LED indicator */}
+               <div className={`w-2 h-2 rounded-full shadow-sm transition-colors ${flashEnabled ? 'bg-yellow-400 shadow-[0_0_8px_#FBBF24]' : 'bg-neutral-700'}`} />
+             </div>
+           </div>
+        </div>
+      </div>
+
+      {/* Preset Selector */}
+      <div className="relative z-10 w-full px-4 pb-4">
+        <div className="flex gap-2 overflow-x-auto w-full pb-2 snap-x hide-scrollbar">
+          {Object.values(presets).map(preset => (
+             <button
+                key={preset.id}
+                onClick={() => setActivePreset(preset)}
+                className={`shrink-0 snap-center px-4 py-2 rounded-full text-[10px] uppercase tracking-wider font-bold transition-all border-2 ${
+                  activePreset.id === preset.id 
+                    ? 'bg-neutral-800 text-white border-neutral-600 shadow-lg' 
+                    : 'bg-transparent text-neutral-500 border-transparent hover:text-neutral-300'
+                }`}
+             >
+                {preset.name}
+             </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Bottom Footer Area */}
+      <div className="relative z-10 w-full p-4 flex justify-between items-center border-t border-neutral-800 bg-neutral-950/90 backdrop-blur-md">
+         <button onClick={openGallery} className="w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center text-orange-500 shadow-inner">
+           <ImageIcon size={20} />
+         </button>
+         
+         <div className="flex items-center gap-2 bg-neutral-800/80 pl-1 pr-4 py-1 rounded-full shadow-inner border border-neutral-800">
+            <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold relative">
+              S
+              <div className="absolute top-0 left-0 w-2 h-2 bg-yellow-400 rounded-full border border-black shadow-sm" />
+            </div>
+            <div className="flex flex-col leading-tight">
+               <span className="text-white/50 text-[9px] font-bold">SnapMoment</span>
+               <span className="text-white text-[11px] font-bold">Best Party! Ever</span>
+            </div>
+         </div>
+
+         <div className="w-10 h-10 bg-neutral-800 rounded-xl flex items-center justify-center text-orange-500 shadow-inner">
+           <Camera size={20} />
+         </div>
+      </div>
+
+      {/* Hidden Canvas */}
+      <canvas ref={canvasRef} className="hidden" />
       {/* Fullscreen Gallery Modal */}
       {showGallery && (
         <div className="fixed inset-0 z-[100] bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
