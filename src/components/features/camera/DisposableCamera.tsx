@@ -114,18 +114,41 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
       if (videoRef.current && videoRef.current.srcObject) {
         const oldStream = videoRef.current.srcObject as MediaStream;
         oldStream.getTracks().forEach((track) => track.stop());
+        videoRef.current.srcObject = null;
       }
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode },
-        audio: false,
-      });
+      
+      let newStream;
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: facingMode } },
+          audio: false,
+        });
+      } catch (err) {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode },
+          audio: false,
+        });
+      }
+      
       setStream(newStream);
       if (videoRef.current) {
         videoRef.current.srcObject = newStream;
       }
     } catch (err) {
       console.error("Error accessing camera:", err);
-      alert("Gagal mengakses kamera. Pastikan izin diberikan.");
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        setStream(fallbackStream);
+        if (videoRef.current) {
+          videoRef.current.srcObject = fallbackStream;
+        }
+      } catch (fallbackErr) {
+        console.error("Fallback error:", fallbackErr);
+        alert("Gagal mengakses kamera. Pastikan izin diberikan.");
+      }
     }
   };
 
