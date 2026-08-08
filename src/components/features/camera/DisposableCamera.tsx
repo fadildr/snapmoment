@@ -101,7 +101,9 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
     // Generate simple guest/device ID
     let id = localStorage.getItem("snapmoment_guest_id");
     if (!id) {
-      id = crypto.randomUUID();
+      id = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : `guest-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
       localStorage.setItem("snapmoment_guest_id", id);
     }
     setGuestId(id);
