@@ -16,7 +16,9 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [photosTaken, setPhotosTaken] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
-  const [flash, setFlash] = useState(false);
+  const [flash, setFlash] = useState(false); // For screen overlay
+  const [flashEnabled, setFlashEnabled] = useState(false); // For torch and logic
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   const [showGallery, setShowGallery] = useState(false);
   const [galleryPhotos, setGalleryPhotos] = useState<PhotoRecord[]>([]);
@@ -36,11 +38,12 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
 
   const startCamera = async () => {
     try {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
+      if (videoRef.current && videoRef.current.srcObject) {
+        const oldStream = videoRef.current.srcObject as MediaStream;
+        oldStream.getTracks().forEach((track) => track.stop());
       }
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
+        video: { facingMode },
         audio: false,
       });
       setStream(newStream);
@@ -56,21 +59,43 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
   useEffect(() => {
     startCamera();
     return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
+      if (videoRef.current && videoRef.current.srcObject) {
+        const oldStream = videoRef.current.srcObject as MediaStream;
+        oldStream.getTracks().forEach((track) => track.stop());
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [facingMode]);
+
+  const toggleCamera = () => {
+    setFacingMode((prev) => (prev === "environment" ? "user" : "environment"));
+  };
+
+  // Reactively apply torch (physical flash) if supported when stream or flashEnabled changes
+  useEffect(() => {
+    const track = stream?.getVideoTracks()[0];
+    if (track) {
+      try {
+        const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
+        if (capabilities?.torch) {
+          track.applyConstraints({ advanced: [{ torch: flashEnabled } as any] }).catch(console.warn);
+        }
+      } catch (err) {
+        console.warn("Torch not supported", err);
+      }
+    }
+  }, [stream, flashEnabled]);
 
   const capturePhoto = async () => {
     if (!videoRef.current || !canvasRef.current || isCapturing) return;
 
     setIsCapturing(true);
 
-    // Flash effect
-    setFlash(true);
-    setTimeout(() => setFlash(false), 100);
+    // Screen flash effect if flash is enabled
+    if (flashEnabled) {
+      setFlash(true);
+      setTimeout(() => setFlash(false), 100);
+    }
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -83,8 +108,15 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
 
     // Apply the preset filter to the context before drawing
     ctx.filter = defaultPreset.cssFilter;
+    if (facingMode === "user") {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    // Reset filter
+    // Reset filter and transform
+    if (facingMode === "user") {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
     ctx.filter = "none";
 
     canvas.toBlob(async (blob) => {
@@ -162,12 +194,17 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
         
         {/* Top bar (Counter & Viewfinder accent) */}
         <div className="w-full flex justify-between items-start mb-6">
-          {/* Fake Flash toggle UI (esthetic) */}
-          <div className="w-12 h-6 bg-red-600 rounded-full border-2 border-black flex items-center justify-end px-1 shadow-inner">
+          {/* Flash toggle UI */}
+          <button 
+            onClick={() => setFlashEnabled((prev) => !prev)}
+            className={`w-12 h-6 rounded-full border-2 border-black flex items-center px-1 shadow-inner transition-colors ${
+              flashEnabled ? "bg-green-500 justify-end" : "bg-red-600 justify-start"
+            }`}
+          >
             <div className="w-4 h-4 bg-white rounded-full flex items-center justify-center">
-              <Zap size={10} className="text-red-600" />
+              <Zap size={10} className={flashEnabled ? "text-green-500" : "text-red-600"} />
             </div>
-          </div>
+          </button>
 
           {/* Frame Counter */}
           <div className="bg-black text-[#FFD700] font-mono text-xl px-3 py-1 rounded-sm shadow-[inset_0_2px_4px_rgba(255,255,255,0.2)] border-2 border-neutral-700 font-bold tracking-widest bg-opacity-80 flex items-center">
@@ -183,7 +220,7 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
             autoPlay
             playsInline
             muted
-            className="absolute inset-0 w-full h-full object-cover"
+            className={`absolute inset-0 w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
             style={{ filter: defaultPreset.cssFilter }} // Show filter live in preview
           />
           {/* Viewfinder Reticle */}
@@ -211,10 +248,10 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
             </div>
           )}
 
-          {/* Refresh camera button (in case video freezes/fails) */}
+          {/* Camera Switch button */}
           <button 
-            onClick={startCamera}
-            className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full backdrop-blur-sm z-10"
+            onClick={toggleCamera}
+            className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full backdrop-blur-sm z-10 hover:bg-black/70 transition-colors"
           >
             <RefreshCcw size={16} />
           </button>
