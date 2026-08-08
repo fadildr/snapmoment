@@ -6,13 +6,26 @@ import { getPhotosByStatus } from "@/lib/idb";
 import { startUploadQueueWorker } from "@/lib/upload-queue";
 import { Cloud, CloudOff, Loader2 } from "lucide-react";
 import { use } from "react";
+import { useRouter } from "next/navigation";
 
 export default function EventCameraPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
   const [pendingCount, setPendingCount] = useState(0);
   const [isOnline, setIsOnline] = useState(true);
+  const [isChecking, setIsChecking] = useState(true);
+
+  const router = useRouter();
 
   useEffect(() => {
+    // Check if guest already entered name
+    const savedName = localStorage.getItem("snapmoment_guest_name");
+    if (!savedName) {
+      // Redirect to root page if no name is found
+      router.push("/");
+      return;
+    }
+    setIsChecking(false);
+
     // Initial online check
     setIsOnline(navigator.onLine);
 
@@ -40,6 +53,15 @@ export default function EventCameraPage({ params }: { params: Promise<{ slug: st
       clearInterval(countInterval);
     };
   }, []);
+
+
+  if (isChecking) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-neutral-950">
+        <Loader2 className="animate-spin text-[#FFD700]" size={32} />
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-col min-h-screen bg-neutral-950">

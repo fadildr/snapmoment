@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import imageCompression from "browser-image-compression";
 import { defaultPreset } from "@/lib/presets";
-import { savePhotoLocally } from "@/lib/idb";
-import { Camera, Zap, RefreshCcw } from "lucide-react";
+import { savePhotoLocally, getAllPhotos, PhotoRecord } from "@/lib/idb";
+import { Camera, Zap, RefreshCcw, ImageIcon, X, Check, XCircle } from "lucide-react";
 
 interface DisposableCameraProps {
   eventId: string;
@@ -17,6 +17,9 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
   const [photosTaken, setPhotosTaken] = useState(0);
   const [isCapturing, setIsCapturing] = useState(false);
   const [flash, setFlash] = useState(false);
+  const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
+  const [showGallery, setShowGallery] = useState(false);
+  const [galleryPhotos, setGalleryPhotos] = useState<PhotoRecord[]>([]);
 
   // Fallback device id
   const [guestId, setGuestId] = useState("");
@@ -99,17 +102,8 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
         };
         const compressedFile = await imageCompression(new File([blob], "photo.jpg", { type: "image/jpeg" }), options);
 
-        const client_photo_id = crypto.randomUUID();
-        await savePhotoLocally({
-          client_photo_id,
-          event_id: eventId,
-          guest_id: guestId,
-          blob: compressedFile,
-          status: "pending",
-          taken_at: Date.now(),
-        });
-
-        setPhotosTaken((prev) => prev + 1);
+        // Show preview instead of immediately saving
+        setPreviewBlob(compressedFile);
       } catch (error) {
         console.error("Error saving photo locally:", error);
         alert("Gagal menyimpan foto. Memori mungkin penuh.");
@@ -117,6 +111,42 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
         setIsCapturing(false);
       }
     }, "image/jpeg", 0.95);
+  };
+
+  const confirmPhoto = async () => {
+    if (!previewBlob) return;
+    try {
+      const client_photo_id = crypto.randomUUID();
+      await savePhotoLocally({
+        client_photo_id,
+        event_id: eventId,
+        guest_id: guestId,
+        blob: previewBlob,
+        status: "pending",
+        taken_at: Date.now(),
+      });
+      setPhotosTaken((prev) => prev + 1);
+    } catch (error) {
+      console.error("Error saving photo locally:", error);
+      alert("Gagal menyimpan foto. Memori mungkin penuh.");
+    } finally {
+      setPreviewBlob(null);
+    }
+  };
+
+  const retakePhoto = () => {
+    setPreviewBlob(null);
+  };
+
+  const openGallery = async () => {
+    try {
+      const photos = await getAllPhotos();
+      photos.sort((a, b) => b.taken_at - a.taken_at);
+      setGalleryPhotos(photos);
+      setShowGallery(true);
+    } catch (err) {
+      console.error("Failed to load gallery", err);
+    }
   };
 
   return (
@@ -160,6 +190,27 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
           <div className="absolute inset-0 pointer-events-none opacity-30 flex items-center justify-center">
              <div className="w-1/2 h-1/2 border border-white border-dashed opacity-50 rounded-lg"></div>
           </div>
+          {/* Preview Overlay */}
+          {previewBlob && (
+            <div className="absolute inset-0 z-20 bg-black flex flex-col">
+               <img 
+                 src={URL.createObjectURL(previewBlob)} 
+                 className="absolute inset-0 w-full h-full object-cover" 
+                 alt="Preview" 
+               />
+               <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 to-transparent flex justify-between items-end">
+                 <button onClick={retakePhoto} className="flex flex-col items-center justify-center p-2 text-white/80 hover:text-white drop-shadow-md">
+                   <XCircle size={36} className="text-red-400 mb-1" />
+                   <span className="text-[10px] font-bold">BUANG</span>
+                 </button>
+                 <button onClick={confirmPhoto} className="flex flex-col items-center justify-center p-2 text-white/80 hover:text-white drop-shadow-md">
+                   <Check size={44} className="text-green-400 mb-1" />
+                   <span className="text-[10px] font-bold shadow-black">SIMPAN</span>
+                 </button>
+               </div>
+            </div>
+          )}
+
           {/* Refresh camera button (in case video freezes/fails) */}
           <button 
             onClick={startCamera}
@@ -173,11 +224,16 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
         <canvas ref={canvasRef} className="hidden" />
 
         {/* Shutter Button area */}
-        <div className="mt-8 relative w-full flex justify-center">
+        <div className="mt-8 relative w-full flex items-center justify-center">
+          <div className="flex-1 flex justify-center">
+             <button onClick={openGallery} className="w-12 h-12 bg-neutral-800 rounded-full border-2 border-neutral-700 flex items-center justify-center text-neutral-400 hover:text-white active:bg-neutral-700 transition-colors shadow-inner">
+               <ImageIcon size={20} />
+             </button>
+          </div>
           <button
             onClick={capturePhoto}
-            disabled={isCapturing}
-            className="w-24 h-24 rounded-full bg-red-600 border-[6px] border-black shadow-[0_4px_0_rgb(0,0,0),inset_0_-4px_8px_rgba(0,0,0,0.3),inset_0_4px_8px_rgba(255,255,255,0.4)] active:translate-y-1 active:shadow-[0_0px_0_rgb(0,0,0),inset_0_-2px_4px_rgba(0,0,0,0.3)] transition-all flex items-center justify-center disabled:opacity-50"
+            disabled={isCapturing || !!previewBlob}
+            className="w-24 h-24 shrink-0 rounded-full bg-red-600 border-[6px] border-black shadow-[0_4px_0_rgb(0,0,0),inset_0_-4px_8px_rgba(0,0,0,0.3),inset_0_4px_8px_rgba(255,255,255,0.4)] active:translate-y-1 active:shadow-[0_0px_0_rgb(0,0,0),inset_0_-2px_4px_rgba(0,0,0,0.3)] transition-all flex items-center justify-center disabled:opacity-50"
           >
             <Camera className="text-black opacity-30" size={32} />
           </button>
@@ -193,6 +249,40 @@ export function DisposableCamera({ eventId }: DisposableCameraProps) {
           </p>
         </div>
       </div>
+      {/* Fullscreen Gallery Modal */}
+      {showGallery && (
+        <div className="fixed inset-0 z-[100] bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+          <div className="p-4 flex justify-between items-center bg-neutral-900 border-b border-neutral-800 shrink-0">
+            <h2 className="text-xl font-bold text-white">Galeri Anda</h2>
+            <button onClick={() => setShowGallery(false)} className="p-2 bg-neutral-800 rounded-full text-white">
+              <X size={20} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            {galleryPhotos.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-neutral-500 text-sm">
+                <ImageIcon size={48} className="mb-4 opacity-50" />
+                Belum ada foto yang disimpan.
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-2">
+                {galleryPhotos.map((p) => {
+                  const url = URL.createObjectURL(p.blob);
+                  return (
+                    <div key={p.client_photo_id} className="aspect-square bg-neutral-800 rounded-lg overflow-hidden relative shadow-md">
+                      <img src={url} className="w-full h-full object-cover" alt="Saved photo" />
+                      {p.status === 'pending' && <div className="absolute top-1 right-1 bg-yellow-500 w-2 h-2 rounded-full shadow-sm" />}
+                      {p.status === 'uploading' && <div className="absolute top-1 right-1 bg-blue-500 w-2 h-2 rounded-full animate-pulse shadow-sm" />}
+                      {p.status === 'uploaded' && <div className="absolute top-1 right-1 bg-green-500 w-2 h-2 rounded-full shadow-sm" />}
+                      {p.status === 'failed' && <div className="absolute top-1 right-1 bg-red-500 w-2 h-2 rounded-full shadow-sm" />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
